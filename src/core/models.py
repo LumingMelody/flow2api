@@ -55,8 +55,8 @@ class Token(BaseModel):
     last_st_refresh_at: Optional[datetime] = None
     last_st_refresh_result: str = ""
 
-    # 429禁用相关
-    ban_reason: Optional[str] = None  # 禁用原因: "429_rate_limit" 或 None
+    # 自动禁用相关
+    ban_reason: Optional[str] = None  # 禁用原因: "429_rate_limit"、"consecutive_errors" 或 None
     banned_at: Optional[datetime] = None  # 禁用时间
 
 

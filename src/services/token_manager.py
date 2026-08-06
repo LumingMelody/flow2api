@@ -262,9 +262,15 @@ class TokenManager:
         # Reset error count when enabling (only reset total error_count, keep today_error_count)
         await self.db.reset_error_count(token_id)
 
-    async def disable_token(self, token_id: int):
+    async def disable_token(self, token_id: int, ban_reason: Optional[str] = None):
         """Disable a token"""
-        await self.db.update_token(token_id, is_active=False)
+        update_fields: Dict[str, Any] = {"is_active": False}
+        if ban_reason:
+            update_fields.update(
+                ban_reason=ban_reason,
+                banned_at=datetime.now(timezone.utc),
+            )
+        await self.db.update_token(token_id, **update_fields)
 
     # ========== Token添加 (支持Project创建) ==========
 
@@ -972,7 +978,7 @@ class TokenManager:
                 f"[TOKEN_BAN] Token {token_id} consecutive error count ({stats.consecutive_error_count}) "
                 f"reached threshold ({admin_config.error_ban_threshold}), auto-disabling"
             )
-            await self.disable_token(token_id)
+            await self.disable_token(token_id, ban_reason="consecutive_errors")
 
     async def record_success(self, token_id: int):
         """Record successful request (reset consecutive error count)

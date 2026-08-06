@@ -1866,7 +1866,7 @@ class FlowClient:
     def _build_video_media_generation_context(self, batch_id: Optional[str] = None) -> Dict[str, Any]:
         return {
             "batchId": batch_id or str(uuid.uuid4()),
-            "audioFailurePreference": "BLOCK_SILENCED_VIDEOS",
+            "audioFailurePreference": config.flow_audio_failure_preference,
         }
 
     def _find_nested_string(self, value: Any, keys: tuple[str, ...]) -> Optional[str]:
@@ -2090,7 +2090,7 @@ class FlowClient:
     def _build_video_media_generation_context(self, batch_id: str) -> Dict[str, Any]:
         return {
             "batchId": batch_id,
-            "audioFailurePreference": "BLOCK_SILENCED_VIDEOS",
+            "audioFailurePreference": config.flow_audio_failure_preference,
         }
 
     def _operations_to_media_refs(
@@ -4909,5 +4909,4 @@ class FlowClient:
         except Exception as e:
             debug_logger.log_error(f"[reCAPTCHA {method}] error: {str(e)}")
             return None
-
 

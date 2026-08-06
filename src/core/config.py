@@ -1,8 +1,11 @@
 """Configuration management for Flow2API"""
+import logging
 import os
 import tomli
 from pathlib import Path
 from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_YESCAPTCHA_TASK_TYPE = "RecaptchaV3TaskProxylessM1S9"
 YESCAPTCHA_TASK_TYPE_OPTIONS = {
@@ -11,6 +14,29 @@ YESCAPTCHA_TASK_TYPE_OPTIONS = {
     "RecaptchaV3TaskProxylessM1S7": 0.7,
     "RecaptchaV3TaskProxylessM1S9": 0.9,
 }
+
+DEFAULT_AUDIO_FAILURE_PREFERENCE = "BLOCK_SILENCED_VIDEOS"
+AUDIO_FAILURE_PREFERENCE_OPTIONS = frozenset({
+    DEFAULT_AUDIO_FAILURE_PREFERENCE,
+    "RETURN_SILENCED_VIDEOS",
+})
+
+
+def normalize_audio_failure_preference(value: Any) -> str:
+    """Validate Flow's audio failure policy before sending it upstream."""
+    normalized = str(value or "").strip()
+    if not normalized:
+        return DEFAULT_AUDIO_FAILURE_PREFERENCE
+    if normalized in AUDIO_FAILURE_PREFERENCE_OPTIONS:
+        return normalized
+
+    allowed_values = ", ".join(sorted(AUDIO_FAILURE_PREFERENCE_OPTIONS))
+    logger.error(
+        f"[Config] Invalid flow.audio_failure_preference {normalized!r}; "
+        f"falling back to {DEFAULT_AUDIO_FAILURE_PREFERENCE}. "
+        f"Allowed values: {allowed_values}"
+    )
+    return DEFAULT_AUDIO_FAILURE_PREFERENCE
 
 
 def normalize_yescaptcha_task_type(task_type: Optional[str]) -> str:
@@ -114,6 +140,12 @@ class Config:
         if value is None:
             return None
         return str(value).strip() or None
+
+    @property
+    def flow_audio_failure_preference(self) -> str:
+        """Audio-review failure policy used by all Flow video requests."""
+        value = self._config.get("flow", {}).get("audio_failure_preference")
+        return normalize_audio_failure_preference(value)
 
     def set_flow_max_retries(self, retries: int):
         """Set flow max retries"""

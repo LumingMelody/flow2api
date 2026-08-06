@@ -9,6 +9,7 @@ api_base_url = "https://aisandbox-pa.googleapis.com/v1"
 timeout = 120
 max_retries = 3
 user_paygate_tier_override = ""  # 可选: PAYGATE_TIER_NOT_PAID/PAYGATE_TIER_ONE/PAYGATE_TIER_TIER1P5/PAYGATE_TIER_TWO；留空表示使用 /v1/credits 原值
+audio_failure_preference = "BLOCK_SILENCED_VIDEOS"  # 可选: BLOCK_SILENCED_VIDEOS/RETURN_SILENCED_VIDEOS；后者允许返回无音轨或静音视频
 image_request_timeout = 40
 image_timeout_retry_count = 1
 image_timeout_retry_delay = 0.8

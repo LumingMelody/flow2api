@@ -1439,7 +1439,7 @@ class GenerationHandler:
                 error_msg = generation_result.get("error_message") or "生成未成功完成"
                 debug_logger.log_warning(f"[GENERATION] 生成未成功，不扣次数: {error_msg}")
                 if token:
-                    await self.token_manager.record_error(token.id)
+                    await self._record_token_error_if_needed(token.id, error_msg)
                 duration = time.time() - start_time
                 record_generation_result(generation_type, "failed", duration)
                 perf_trace["status"] = "failed"
@@ -1543,12 +1543,7 @@ class GenerationHandler:
             error_msg = f"生成失败: {str(e)}"
             debug_logger.log_error(f"[GENERATION] 生成失败: {error_msg}")
             if token:
-                if self._should_count_token_error(e):
-                    await self.token_manager.record_error(token.id)
-                else:
-                    debug_logger.log_info(
-                        f"[GENERATION] 跳过 token 错误计数: token_id={token.id}, reason={str(e)[:200]}"
-                    )
+                await self._record_token_error_if_needed(token.id, e)
 
             # 先将最终失败状态落库，再返回错误响应，避免日志停在 102。
             duration = time.time() - start_time
@@ -1588,11 +1583,23 @@ class GenerationHandler:
         else:
             return "没有可用的Token进行视频生成。所有Token都处于禁用、冷却、配额耗尽或已过期状态。"
 
-    def _should_count_token_error(self, error: Exception) -> bool:
+    async def _record_token_error_if_needed(self, token_id: int, error: Any) -> bool:
+        """按统一分类规则记录 token 错误；返回本次是否计数。"""
+        if self._should_count_token_error(error):
+            await self.token_manager.record_error(token_id)
+            return True
+
+        debug_logger.log_info(
+            f"[GENERATION] 跳过 token 错误计数: token_id={token_id}, reason={str(error)[:200]}"
+        )
+        return False
+
+    def _should_count_token_error(self, error: Any) -> bool:
         """判断失败是否应计入 token 连续错误。
 
         reCAPTCHA 获取失败、验证码供应商错误、打码资源不足等问题通常不是账号本身异常；
-        若将其纳入连续错误，会在回归测试或代理波动时把 token 自动打成 inactive。
+        内容审核/安全过滤也只与本次输入或输出有关。若将这些失败纳入连续错误，会在
+        回归测试、代理波动或连续命中内容策略时把 token 自动打成 inactive。
         """
         error_text = str(error or "").strip().lower()
         if not error_text:
@@ -1614,6 +1621,23 @@ class GenerationHandler:
             "ezcaptcha",
         )
         if any(marker in error_text for marker in non_token_fault_markers):
+            return False
+
+        content_filter_markers = (
+            "public_error_audio_filtered",
+            "public_error_unsafe_generation",
+            "public_error_prominent_people_filter_failed",
+            "sensitive content",
+            "content was blocked",
+            "content has been blocked",
+            "output was blocked",
+            "output has been blocked",
+            "blocked by safety filter",
+            "blocked by a safety filter",
+            "violates our policies",
+            "might violate our policies",
+        )
+        if any(marker in error_text for marker in content_filter_markers):
             return False
 
         if "没有可用的token进行" in error_text:
