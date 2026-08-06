@@ -11,9 +11,9 @@ from ..core.monitoring import record_generation_result
 from ..core.models import Task, RequestLog
 from ..core.account_tiers import (
     PAYGATE_TIER_NOT_PAID,
+    get_effective_user_paygate_tier,
     get_paygate_tier_label,
     get_required_paygate_tier_for_model,
-    normalize_user_paygate_tier,
     supports_model_for_tier,
 )
 from .file_cache import FileCache
@@ -1094,6 +1094,7 @@ class GenerationHandler:
             "url": None,
             "generated_assets": None,
             "base_url": None,
+            "upsample": None,
         }
 
     def _mark_generation_failed(self, generation_result: Optional[Dict[str, Any]], error_message: str):
@@ -1374,8 +1375,12 @@ class GenerationHandler:
             # 4. 确保Project存在
             debug_logger.log_info(f"[GENERATION] 检查/创建Project...")
 
-            if not supports_model_for_tier(model, token.user_paygate_tier):
-                required_tier = get_required_paygate_tier_for_model(model)
+            effective_tier = get_effective_user_paygate_tier(
+                token.user_paygate_tier,
+                config.flow_user_paygate_tier_override,
+            )
+            if not supports_model_for_tier(model, effective_tier, model_config["type"]):
+                required_tier = get_required_paygate_tier_for_model(model, model_config["type"])
                 error_msg = "当前模型需要 " + get_paygate_tier_label(required_tier) + " 账号: " + model
                 debug_logger.log_error(f"[GENERATION] {error_msg}")
                 record_generation_result(generation_type, "failed", time.time() - start_time)
@@ -1641,7 +1646,10 @@ class GenerationHandler:
             image_trace["input_image_count"] = len(images) if images else 0
 
         # 不在本地等待图片硬并发槽位；请求一到就直接向上游提交。
-        normalized_tier = normalize_user_paygate_tier(token.user_paygate_tier)
+        normalized_tier = get_effective_user_paygate_tier(
+            token.user_paygate_tier,
+            config.flow_user_paygate_tier_override,
+        )
 
         if image_trace is not None:
             image_trace["slot_wait_ms"] = 0
@@ -1925,7 +1933,10 @@ class GenerationHandler:
             video_trace["input_image_count"] = len(images) if images else 0
 
         # 不在本地等待视频硬并发槽位；请求一到就直接向上游提交。
-        normalized_tier = normalize_user_paygate_tier(token.user_paygate_tier)
+        normalized_tier = get_effective_user_paygate_tier(
+            token.user_paygate_tier,
+            config.flow_user_paygate_tier_override,
+        )
 
         if video_trace is not None:
             video_trace["slot_wait_ms"] = 0
@@ -2220,6 +2231,8 @@ class GenerationHandler:
                 response_state,
                 request_log_state,
                 extend_source_media_id=extend_source_id,
+                user_paygate_tier=normalized_tier,
+                requested_aspect_ratio=model_config["aspect_ratio"],
             ):
                 yield chunk
 
@@ -2237,11 +2250,16 @@ class GenerationHandler:
         response_state: Optional[Dict[str, Any]] = None,
         request_log_state: Optional[Dict[str, Any]] = None,
         extend_source_media_id: Optional[str] = None,
+        *,
+        user_paygate_tier: str,
+        requested_aspect_ratio: str,
     ) -> AsyncGenerator:
         """轮询视频生成结果
         
         Args:
             upsample_config: 放大配置 {"resolution": "VIDEO_RESOLUTION_4K", "model_key": "veo_3_1_upsampler_4k"}
+            user_paygate_tier: 当前账号归一化后的层级，供放大请求使用
+            requested_aspect_ratio: 当前模型配置的宽高比，供放大请求使用
         """
 
         if response_state is None:
@@ -2346,6 +2364,11 @@ class GenerationHandler:
                         yield self._create_error_response(error_msg, status_code=502)
                         return
 
+                    upsample_state = response_state.get("upsample")
+                    if isinstance(upsample_state, dict) and upsample_state.get("status") == "submitted":
+                        upsample_state["status"] = "succeeded"
+                        upsample_state["fallback_to_original"] = False
+
                     video_info["url"] = video_url
                     video_info["mediaName"] = media_name
                     video_info["mediaGenerationId"] = video_media_id
@@ -2353,7 +2376,28 @@ class GenerationHandler:
                     operation["operation"]["metadata"] = metadata
 
                     # ========== 视频放大处理 ==========
+                    if upsample_config and not video_media_id:
+                        error_msg = "视频放大失败：基础视频缺少 mediaGenerationId"
+                        response_state["upsample"] = {
+                            "requested": True,
+                            "status": "failed",
+                            "resolution": upsample_config["resolution"],
+                            "model_key": upsample_config["model_key"],
+                            "fallback_to_original": True,
+                            "error": error_msg,
+                        }
+                        debug_logger.log_error(f"[VIDEO UPSAMPLE] {error_msg}，返回原始视频")
+                        if stream:
+                            yield self._create_stream_chunk(f"⚠️ {error_msg}，返回原始视频\n")
+
                     if upsample_config and video_media_id:
+                        response_state["upsample"] = {
+                            "requested": True,
+                            "status": "submitting",
+                            "resolution": upsample_config["resolution"],
+                            "model_key": upsample_config["model_key"],
+                            "fallback_to_original": False,
+                        }
                         if stream:
                             resolution_name = "4K" if "4K" in upsample_config["resolution"] else "1080P"
                             yield self._create_stream_chunk(f"\n视频生成完成，开始 {resolution_name} 放大处理...（可能需要 30 分钟）\n")
@@ -2364,16 +2408,17 @@ class GenerationHandler:
                                 at=token.at,
                                 project_id=project_id,
                                 video_media_id=video_media_id,
-                                aspect_ratio=aspect_ratio,
+                                aspect_ratio=requested_aspect_ratio,
                                 resolution=upsample_config["resolution"],
                                 model_key=upsample_config["model_key"],
-                                user_paygate_tier=normalized_tier,
+                                user_paygate_tier=user_paygate_tier,
                                 token_id=token.id,
                                 token_video_concurrency=token.video_concurrency,
                             )
                             
                             upsample_operations = upsample_result.get("operations", [])
                             if upsample_operations:
+                                response_state["upsample"]["status"] = "submitted"
                                 if stream:
                                     yield self._create_stream_chunk("放大任务已提交，继续轮询...\n")
                                 
@@ -2387,16 +2432,31 @@ class GenerationHandler:
                                     generation_result,
                                     response_state,
                                     request_log_state,
+                                    user_paygate_tier=user_paygate_tier,
+                                    requested_aspect_ratio=requested_aspect_ratio,
                                 ):
                                     yield chunk
                                 return
                             else:
+                                error_msg = "视频放大任务创建失败：上游未返回 operations"
+                                response_state["upsample"].update({
+                                    "status": "failed",
+                                    "fallback_to_original": True,
+                                    "error": error_msg,
+                                })
+                                debug_logger.log_error(f"[VIDEO UPSAMPLE] {error_msg}，返回原始视频")
                                 if stream:
-                                    yield self._create_stream_chunk("⚠️ 放大任务创建失败，返回原始视频\n")
+                                    yield self._create_stream_chunk(f"⚠️ {error_msg}，返回原始视频\n")
                         except Exception as e:
-                            debug_logger.log_error(f"Video upsample failed: {str(e)}")
+                            error_msg = f"视频放大失败：{self._normalize_error_message(e)}"
+                            response_state["upsample"].update({
+                                "status": "failed",
+                                "fallback_to_original": True,
+                                "error": error_msg,
+                            })
+                            debug_logger.log_error(f"[VIDEO UPSAMPLE] {error_msg}，返回原始视频")
                             if stream:
-                                yield self._create_stream_chunk(f"⚠️ 放大失败: {str(e)}，返回原始视频\n")
+                                yield self._create_stream_chunk(f"⚠️ {error_msg}，返回原始视频\n")
 
                     # ========== Extend 视频拼接 ==========
                     if extend_source_media_id and video_media_id:
@@ -2497,6 +2557,8 @@ class GenerationHandler:
                         "model": resolved_video.get("model"),
                         "duration": resolved_video.get("duration"),
                     }
+                    if isinstance(response_state.get("upsample"), dict):
+                        response_state["generated_assets"]["upsample"] = dict(response_state["upsample"])
 
                     # 返回结果
                     self._mark_generation_succeeded(generation_result)
@@ -2510,7 +2572,8 @@ class GenerationHandler:
                     else:
                         yield self._create_completion_response(
                             local_url,  # 直接传URL,让方法内部格式化
-                            media_type="video"
+                            media_type="video",
+                            response_state=response_state,
                         )
                     return
 
@@ -2604,7 +2667,13 @@ class GenerationHandler:
 
         return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-    def _create_completion_response(self, content: str, media_type: str = "image", is_availability_check: bool = False) -> str:
+    def _create_completion_response(
+        self,
+        content: str,
+        media_type: str = "image",
+        is_availability_check: bool = False,
+        response_state: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """创建非流式响应
 
         Args:
@@ -2642,6 +2711,12 @@ class GenerationHandler:
                 "finish_reason": "stop"
             }]
         }
+
+        if isinstance(response_state, dict):
+            if response_state.get("url"):
+                response["url"] = response_state["url"]
+            if response_state.get("generated_assets"):
+                response["generated_assets"] = response_state["generated_assets"]
 
         return json.dumps(response, ensure_ascii=False)
 
