@@ -107,6 +107,14 @@ class Config:
         except Exception:
             return 3
 
+    @property
+    def flow_user_paygate_tier_override(self) -> Optional[str]:
+        """Optional account tier override used by local gates and Flow requests."""
+        value = self._config.get("flow", {}).get("user_paygate_tier_override")
+        if value is None:
+            return None
+        return str(value).strip() or None
+
     def set_flow_max_retries(self, retries: int):
         """Set flow max retries"""
         if "flow" not in self._config:

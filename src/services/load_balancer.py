@@ -5,9 +5,9 @@ from typing import Optional, Dict
 from ..core.models import Token
 from ..core.config import config
 from ..core.account_tiers import (
+    get_effective_user_paygate_tier,
     get_paygate_tier_label,
     get_required_paygate_tier_for_model,
-    normalize_user_paygate_tier,
     supports_model_for_tier,
 )
 from .concurrency_manager import ConcurrencyManager
@@ -179,11 +179,19 @@ class LoadBalancer:
 
         available_tokens = []
         filtered_reasons = {}
-        required_tier = get_required_paygate_tier_for_model(model)
+        model_type = (
+            "image" if for_image_generation and not for_video_generation
+            else "video" if for_video_generation and not for_image_generation
+            else None
+        )
+        required_tier = get_required_paygate_tier_for_model(model, model_type)
 
         for token in active_tokens:
-            normalized_tier = normalize_user_paygate_tier(token.user_paygate_tier)
-            if model and not supports_model_for_tier(model, normalized_tier):
+            normalized_tier = get_effective_user_paygate_tier(
+                token.user_paygate_tier,
+                config.flow_user_paygate_tier_override,
+            )
+            if model and not supports_model_for_tier(model, normalized_tier, model_type):
                 filtered_reasons[token.id] = '账号等级不足，需要 ' + get_paygate_tier_label(required_tier)
                 continue
             if for_image_generation:
@@ -326,11 +334,19 @@ class LoadBalancer:
         if not active_tokens:
             return None
 
-        required_tier = get_required_paygate_tier_for_model(model)
+        model_type = (
+            "image" if for_image_generation and not for_video_generation
+            else "video" if for_video_generation and not for_image_generation
+            else None
+        )
+        required_tier = get_required_paygate_tier_for_model(model, model_type)
         supported_tokens = []
         for token in active_tokens:
-            normalized_tier = normalize_user_paygate_tier(token.user_paygate_tier)
-            if model and not supports_model_for_tier(model, normalized_tier):
+            normalized_tier = get_effective_user_paygate_tier(
+                token.user_paygate_tier,
+                config.flow_user_paygate_tier_override,
+            )
+            if model and not supports_model_for_tier(model, normalized_tier, model_type):
                 continue
             supported_tokens.append(token)
 

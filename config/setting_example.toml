@@ -8,6 +8,7 @@ labs_base_url = "https://labs.google/fx/api"
 api_base_url = "https://aisandbox-pa.googleapis.com/v1"
 timeout = 120
 max_retries = 3
+user_paygate_tier_override = ""  # 可选: PAYGATE_TIER_NOT_PAID/PAYGATE_TIER_ONE/PAYGATE_TIER_TIER1P5/PAYGATE_TIER_TWO；留空表示使用 /v1/credits 原值
 image_request_timeout = 40
 image_timeout_retry_count = 1
 image_timeout_retry_delay = 0.8
