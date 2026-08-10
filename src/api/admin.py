@@ -29,6 +29,7 @@ from ..core.monitoring import build_public_health_snapshot
 from ..services.token_manager import TokenManager
 from ..services.proxy_manager import ProxyManager
 from ..services.concurrency_manager import ConcurrencyManager
+from ..plugin_config import build_plugin_connection_url
 
 try:
     import httpx
@@ -2289,20 +2290,13 @@ async def get_plugin_config(request: Request, token: str = Depends(verify_admin_
     # This allows the connection URL to reflect the user's actual access path
     host_header = request.headers.get("host", "")
 
-    # Generate connection URL based on actual request
-    if host_header:
-        # Use the actual domain/IP and port from the request
-        connection_url = f"http://{host_header}/api/plugin/update-token"
-    else:
-        # Fallback to config-based URL
-        from ..core.config import config
-        server_host = config.server_host
-        server_port = config.server_port
-
-        if server_host == "0.0.0.0":
-            connection_url = f"http://127.0.0.1:{server_port}/api/plugin/update-token"
-        else:
-            connection_url = f"http://{server_host}:{server_port}/api/plugin/update-token"
+    # Generate connection URL based on a sanitized request host. Invalid values
+    # use the same config-based fallback as a missing Host header.
+    connection_url = build_plugin_connection_url(
+        host_header,
+        config.server_host,
+        config.server_port,
+    )
 
     return {
         "success": True,
